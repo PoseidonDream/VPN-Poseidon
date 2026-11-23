@@ -129,6 +129,21 @@ Tips
     look. The app starts in whichever one Windows is set to.
 
 
+UPDATES
+-------
+Free VPN looks for a new version when it opens and twice a day while it
+runs. When there is one, a blue bar appears at the top of the window: click
+"Update now". It downloads the new version, closes, and opens again by itself
+a few seconds later, and reconnects if you were connected. "What's new" shows
+what changed; "Not now" hides the bar until the next check.
+
+Nothing is installed without your click. To stop the checks, switch off
+"Check for updates automatically" in Settings; "Check now" is right below it.
+
+Updates come only from the releases of this project on GitHub:
+https://github.com/PoseidonDream/VPN-Poseidon/releases
+
+
 OPTIONAL: MAKE A REAL .EXE
 --------------------------
 Double-click "Build EXE (optional).bat". It creates dist\FreeVPN.exe, which
@@ -186,6 +201,8 @@ unless the site uses https (the padlock in your browser).
 
 What this app sends where:
   * www.vpngate.net : downloads the public server list.
+  * api.github.com / github.com : looks for, and downloads, new versions of
+    Free VPN (see UPDATES).
   * api.ipify.org : asks "what is my IP?" to show your IP before and after
     connecting.
   * In "Discord only" mode: public DNS servers (1.0.0.1 and 8.8.4.4) are

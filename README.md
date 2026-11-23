@@ -31,6 +31,7 @@ Windows, the icon next to the clock and troubleshooting.
 - Reconnects by itself if the connection drops
 - Icon next to the clock; the X button asks before closing
 - Starts with Windows (optional), connects by itself (optional)
+- Updates itself: a new release here shows up in the app as a one-click update
 - Light and dark theme, sharp on high-DPI screens
 
 ## Privacy, honestly
@@ -44,4 +45,5 @@ logs for at least two weeks.
 `FreeVPN.pyw` is the whole app (Python standard library only). The tests are in
 [`tests/`](tests/README.md); GitHub runs them on Windows for every push
 (see `.github/workflows/windows.yml`), and a version tag such as `v1.4` publishes a
-release with `FreeVPN.exe` and `FreeVPN.zip`.
+release with `FreeVPN.exe`, `FreeVPN.zip` and `FreeVPN.pyw`. Running copies of the app see
+the new release and offer it as an update (the version in `FreeVPN.pyw` must match the tag).

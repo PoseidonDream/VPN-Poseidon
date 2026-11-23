@@ -38,12 +38,15 @@ check("keeps running on battery, never times out, normal priority", g("t:Setting
 check("starts the right program, arguments and folder (escaped correctly)", g("t:Actions/t:Exec/t:Command") == cmd and g("t:Actions/t:Exec/t:Arguments") == args and g("t:Actions/t:Exec/t:WorkingDirectory") == folder)
 
 # what autostart_command gives for a normal run and for the .exe
-sys.argv = [r"/fake/Free VPN/FreeVPN.pyw"]
+import os
+script = os.path.abspath(os.path.join(os.sep, "fake", "Free VPN", "FreeVPN.pyw"))   # C:\fake\... on Windows
+sys.argv = [script]
 c, a, f = mod.autostart_command()
-check("command: script path quoted + --startup", a == '"/fake/Free VPN/FreeVPN.pyw" --startup' and f == "/fake/Free VPN", a)
-sys.frozen = True; sys.executable_backup = sys.executable; sys.executable = "/fake/dist/FreeVPN.exe"
+check("command: script path quoted + --startup", a == '"%s" --startup' % script and f == os.path.dirname(script), a)
+exe = os.path.abspath(os.path.join(os.sep, "fake", "dist", "FreeVPN.exe"))
+sys.frozen = True; sys.executable_backup = sys.executable; sys.executable = exe
 c, a, f = mod.autostart_command()
-check("command for FreeVPN.exe", (c, a, f) == ("/fake/dist/FreeVPN.exe", "--startup", "/fake/dist"))
+check("command for FreeVPN.exe", (c, a, f) == (exe, "--startup", os.path.dirname(exe)))
 del sys.frozen; sys.executable = sys.executable_backup
 
 # the PowerShell command
