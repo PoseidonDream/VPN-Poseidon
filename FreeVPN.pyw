@@ -92,6 +92,7 @@ DEFAULT_SETTINGS = {
     "tray": True,             # "Keep running" hides the window next to the clock
     "good_servers": [],       # servers that worked, most recent first ("host|ip")
     "tray_hint_shown": False,
+    "check_updates": True,    # look for a new version on GitHub
 }
 
 
@@ -1089,6 +1090,119 @@ def set_autostart(enabled: bool) -> tuple[int, str]:
     return run_hidden(_powershell_encoded(script), timeout=60)
 
 
+# --------------------------------------------------------------------------
+# Updates
+#
+# Free VPN asks GitHub for the newest release of this project. If it's newer,
+# the window offers it; one click downloads it, checks it, and hands over to a
+# small helper that waits for Free VPN to close, puts the new file in place and
+# starts it again (reconnecting if you were connected).
+# --------------------------------------------------------------------------
+
+UPDATE_REPO = "PoseidonDream/VPN-Poseidon"
+UPDATE_API = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+UPDATE_DOWNLOAD_PREFIX = f"https://github.com/{UPDATE_REPO}/releases/download/"
+RELEASES_PAGE = f"https://github.com/{UPDATE_REPO}/releases/latest"
+UPDATE_CHECK_EVERY = 12 * 3600     # seconds between automatic checks while running
+UPDATE_FIRST_CHECK_MS = 8000       # first check, a few seconds after opening
+UPDATE_MAX_SIZE = 80 * 1024 * 1024
+UPDATED_ARG, RESUME_ARG = "--updated", "--resume"
+
+
+def parse_version(text: str) -> tuple:
+    """"v1.10.2" -> (1, 10, 2)."""
+    return tuple(int(n) for n in re.findall(r"\d+", text or "")[:3]) or (0,)
+
+
+def is_newer(candidate: str, current: str) -> bool:
+    a, b = parse_version(candidate), parse_version(current)
+    width = max(len(a), len(b))
+    return a + (0,) * (width - len(a)) > b + (0,) * (width - len(b))
+
+
+def update_file_name() -> str:
+    """What this copy of Free VPN is made of: FreeVPN.exe or FreeVPN.pyw."""
+    return "FreeVPN.exe" if getattr(sys, "frozen", False) else "FreeVPN.pyw"
+
+
+def this_program_file() -> str:
+    return os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__)
+
+
+def check_for_update() -> dict | None:
+    """Ask GitHub about the latest release. Returns details of the update, or
+    None if this copy is up to date. Raises if GitHub can't be asked."""
+    request = urllib.request.Request(UPDATE_API, headers={
+        "User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        release = json.loads(response.read(2 * 1024 * 1024).decode("utf-8"))
+    if not isinstance(release, dict) or release.get("draft") or release.get("prerelease"):
+        return None
+    version = str(release.get("tag_name") or "").lstrip("vV")
+    if not version or not is_newer(version, APP_VERSION):
+        return None
+    name = update_file_name()
+    asset = next((a for a in release.get("assets") or []
+                  if isinstance(a, dict) and a.get("name") == name), None)
+    url = str((asset or {}).get("browser_download_url") or "")
+    if not url.startswith(UPDATE_DOWNLOAD_PREFIX):    # only this project's own releases
+        return None
+    return {"version": version, "url": url, "size": int(asset.get("size") or 0),
+            "page": str(release.get("html_url") or RELEASES_PAGE)}
+
+
+def download_update(update: dict, folder: str) -> str:
+    """Download the new version next to the current one (as "<name>.new"),
+    check that it's complete and really is Free VPN, and return its path."""
+    request = urllib.request.Request(update["url"], headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        data = response.read(UPDATE_MAX_SIZE + 1)
+    if len(data) > UPDATE_MAX_SIZE:
+        raise ValueError("the download was unexpectedly large")
+    if update.get("size") and len(data) != update["size"]:
+        raise ValueError("the download was incomplete")
+    name = update_file_name()
+    if name.endswith(".exe"):
+        if data[:2] != b"MZ" or len(data) < 1024 * 1024:
+            raise ValueError("the download isn't a Windows program")
+    else:
+        text = data.decode("utf-8")
+        compile(text, name, "exec")                  # a SyntaxError if it's damaged
+        found = re.search(r'^APP_VERSION = "([^"]+)"', text, re.M)
+        if not found or found.group(1) != update["version"]:
+            raise ValueError("the download isn't the expected version")
+    path = os.path.join(folder, name + ".new")
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
+def update_helper_command(new_file: str, target: str, program: str, arguments: str,
+                          folder: str, pid: int) -> list:
+    """A hidden PowerShell that waits for process `pid` (this app) to close,
+    moves `new_file` over `target`, and starts `program arguments`. If the move
+    fails it still starts the program, so you're never left without Free VPN."""
+    q = _ps_quote
+    script = f"""    Wait-Process -Id {int(pid)} -Timeout 90 -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+    for ($i = 0; $i -lt 20; $i++) {{
+        try {{ Move-Item -LiteralPath {q(new_file)} -Destination {q(target)} -Force; break }}
+        catch {{ Start-Sleep -Milliseconds 500 }}
+    }}
+    Start-Process -FilePath {q(program)} -ArgumentList {q(arguments)} -WorkingDirectory {q(folder)}"""
+    return _powershell_encoded(script)
+
+
+def start_update_helper(command: list) -> None:
+    flags = 0x08000000 | 0x01000000            # no window; outlive our job, if we're in one
+    try:
+        subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=flags if IS_WINDOWS else 0)
+    except OSError:
+        subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=0x08000000 if IS_WINDOWS else 0)
+
+
 # ---- one copy at a time: a second start just shows the first copy's window ----
 
 SHOW_REQUEST, SHOW_REPLY = b"FreeVPN show\n", b"FreeVPN ok\n"
@@ -1623,6 +1737,7 @@ THEMES = {
         "red": "#dc3545", "red_text": "#c62838", "red_tint": "#fdecee",
         "sel_bg": "#dbe7fe", "sel_fg": "#10203c", "stripe": "#f8fafc", "seg_on": "#ffffff",
         "banner_bg": "#fff5d6", "banner_fg": "#5a4300", "banner_border": "#f1dc9d",
+        "info_bg": "#e8f0fe", "info_fg": "#173a78", "info_border": "#c3d6fb",
         "shadow": 0.16,
     },
     "dark": {
@@ -1636,6 +1751,7 @@ THEMES = {
         "red": "#ef5a67", "red_text": "#ff7a85", "red_tint": "#3a1f25",
         "sel_bg": "#243a5e", "sel_fg": "#ffffff", "stripe": "#1a2029", "seg_on": "#36414f",
         "banner_bg": "#33290f", "banner_fg": "#f3d48a", "banner_border": "#57461a",
+        "info_bg": "#172741", "info_fg": "#b8cdf5", "info_border": "#2a426b",
         "shadow": 0.0,
     },
 }
@@ -1783,6 +1899,8 @@ class Skin:
         self._element(f"{T}.Banner.bg",
                       panel("banner", r, c["banner_bg"], c["banner_border"], middle=160),
                       **nine)
+        self._element(f"{T}.Info.bg",
+                      panel("info", r, c["info_bg"], c["info_border"], middle=160), **nine)
 
         # Buttons and the country box
         r = px(8)
@@ -1884,6 +2002,9 @@ class Skin:
         st.layout("Banner.TFrame", rounded(f"{T}.Banner.bg"))
         st.configure("Banner.TFrame", background=c["surface"])
         st.configure("BannerFill.TFrame", background=c["banner_bg"])
+        st.layout("Info.TFrame", rounded(f"{T}.Info.bg"))
+        st.configure("Info.TFrame", background=c["surface"])
+        st.configure("InfoFill.TFrame", background=c["info_bg"])
 
         # Text
         st.configure("TLabel", background=c["surface"], foreground=c["text"], font=self.f_base)
@@ -1900,6 +2021,10 @@ class Skin:
                      font=self.f_small)
         st.configure("BannerTitle.TLabel", background=c["banner_bg"],
                      foreground=c["banner_fg"], font=self.f_strong)
+        st.configure("Info.TLabel", background=c["info_bg"], foreground=c["info_fg"],
+                     font=self.f_small)
+        st.configure("InfoTitle.TLabel", background=c["info_bg"], foreground=c["info_fg"],
+                     font=self.f_strong)
 
         # Buttons
         def button(element):
@@ -1924,6 +2049,11 @@ class Skin:
                      padding=big)
         st.layout("Banner.TButton", button(f"{T}.Btn.bg"))
         st.configure("Banner.TButton", background=c["banner_bg"])
+        st.layout("Info.TButton", button(f"{T}.Btn.bg"))
+        st.configure("Info.TButton", background=c["info_bg"])
+        st.layout("InfoPrimary.TButton", button(f"{T}.Primary.bg"))
+        st.configure("InfoPrimary.TButton", background=c["info_bg"], foreground=c["on_accent"],
+                     font=self.f_strong)
         st.layout("Ghost.TButton", button(f"{T}.Ghost.bg"))
         st.configure("Ghost.TButton", foreground=c["muted"], font=self.f_small, padding=small)
         st.layout("Tab.TButton", button(f"{T}.Ghost.bg"))
@@ -2240,6 +2370,12 @@ class App:
         self._show_server: socket.socket | None = None
         self.tray: TrayIcon | None = None
         self.started_at_sign_in = AUTOSTART_ARG in sys.argv[1:]
+        self.update: dict | None = None     # a newer version GitHub told us about
+        self.update_busy = False
+        self.update_job = None
+        self.resuming = RESUME_ARG in sys.argv[1:]   # restarted by an update while connected
+        if self.resuming:
+            self.auto_connect_pending = True
         self._close_dialog: tk.Toplevel | None = None
         self._close_buttons: dict = {}
         self._closing = False
@@ -2269,6 +2405,12 @@ class App:
             self._run_in_background(lambda: set_autostart(True), "autostart_refresh")
         self._start_show_listener()
         self._start_tray()
+        if UPDATED_ARG in sys.argv[1:]:
+            self._log(f"Updated to version {APP_VERSION}")
+            self._show_update(f"Free VPN was updated to version {APP_VERSION}",
+                              "\u201cWhat's new\u201d shows what changed.", busy=False,
+                              offer=False)
+        self.update_job = self.root.after(UPDATE_FIRST_CHECK_MS, self._auto_check_update)
 
     # ---- layout -----------------------------------------------------------
 
@@ -2407,6 +2549,28 @@ class App:
             ttk.Button(banner_buttons, text=text, style="Banner.TButton",
                        command=command).pack(side="left", padx=(0, px(8)))
 
+        # "A new version is available" banner (shown only then)
+        self.update_banner = ttk.Frame(main, style="Info.TFrame", padding=(px(14), px(12)))
+        self.update_title = tk.StringVar()
+        self.update_text = tk.StringVar()
+        ttk.Label(self.update_banner, textvariable=self.update_title,
+                  style="InfoTitle.TLabel").pack(anchor="w")
+        update_label = ttk.Label(self.update_banner, textvariable=self.update_text,
+                                 style="Info.TLabel", justify="left")
+        update_label.pack(anchor="w", fill="x", pady=(px(2), px(10)))
+        update_buttons = ttk.Frame(self.update_banner, style="InfoFill.TFrame")
+        update_buttons.pack(anchor="w")
+        self.update_now_btn = ttk.Button(update_buttons, text="Update now",
+                                         style="InfoPrimary.TButton", command=self.install_update)
+        self.update_now_btn.pack(side="left", padx=(0, px(8)))
+        self.whats_new_btn = ttk.Button(
+            update_buttons, text="What's new", style="Info.TButton",
+            command=lambda: webbrowser.open((self.update or {}).get("page", RELEASES_PAGE)))
+        self.whats_new_btn.pack(side="left", padx=(0, px(8)))
+        self.update_later_btn = ttk.Button(update_buttons, text="Not now", style="Info.TButton",
+                                           command=self._hide_update)
+        self.update_later_btn.pack(side="left")
+
         self.stack = ttk.Frame(main)
         self.stack.pack(fill="both", expand=True, pady=(px(10), 0))
         self.stack.rowconfigure(0, weight=1)
@@ -2538,6 +2702,22 @@ class App:
         setting("Closing the window",
                 "The X button asks whether to keep Free VPN running in the background or to "
                 "quit. While it is minimized, the VPN stays on.")
+        self.check_updates_var = tk.BooleanVar(value=bool(self.settings["check_updates"]))
+        setting("Check for updates automatically",
+                "Looks for a new version of Free VPN on GitHub when it opens and twice a day. "
+                "Nothing is installed until you press \u201cUpdate now\u201d.",
+                self.check_updates_var)
+        version_row = ttk.Frame(settings_body)
+        version_row.pack(fill="x", pady=(px(6), px(4)))
+        ttk.Label(version_row, text=f"You have version {APP_VERSION}.", style="Muted.TLabel"
+                  ).pack(side="left")
+        self.check_now_btn = ttk.Button(version_row, text="Check now", style="Ghost.TButton",
+                                        command=lambda: self.check_update(manual=True))
+        self.check_now_btn.pack(side="left", padx=(px(8), 0))
+        self.update_status = tk.StringVar()
+        ttk.Label(version_row, textvariable=self.update_status, style="Muted.TLabel"
+                  ).pack(side="left", padx=(px(6), 0))
+
         # Scroll with the mouse wheel anywhere over the settings, not just the gaps.
         def bind_wheel(widget):
             for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
@@ -2562,6 +2742,7 @@ class App:
             inside = event.width - 2 * pad
             footer.configure(wraplength=max(inside - px(110), px(200)))
             banner_text.configure(wraplength=max(inside - px(30), px(200)))
+            update_label.configure(wraplength=max(inside - px(30), px(200)))
             for label in explanations:
                 label.configure(wraplength=max(inside - px(70), px(200)))
         main.bind("<Configure>", rewrap)
@@ -2618,6 +2799,114 @@ class App:
         self.views[key].tkraise()
         for name, button in self.tab_buttons.items():
             button.configure(style="TabOn.TButton" if name == key else "Tab.TButton")
+
+    # ---- updates ------------------------------------------------------------
+
+    def _auto_check_update(self) -> None:
+        self.update_job = self.root.after(UPDATE_CHECK_EVERY * 1000, self._auto_check_update)
+        if self.check_updates_var.get():
+            self.check_update(manual=False)
+
+    def check_update(self, manual: bool = False) -> None:
+        if self.update_busy:
+            return
+        self.update_busy = True
+        self.check_now_btn.state(["disabled"])
+        if manual:
+            self.update_status.set("Checking\u2026")
+
+        def work():
+            try:
+                return manual, check_for_update(), ""
+            except Exception as exc:
+                return manual, None, short_error(exc)
+        self._run_in_background(work, "update_checked")
+
+    def _on_update_checked(self, manual: bool, update, error: str) -> None:
+        self.update_busy = False
+        self.check_now_btn.state(["!disabled"])
+        if error:
+            self._log(f"Couldn't check for updates: {error}")
+            self.update_status.set("Couldn't reach GitHub. Try again later." if manual else "")
+            return
+        if update is None:
+            self.update_status.set("You have the newest version." if manual else "")
+            return
+        self.update_status.set(f"Version {update['version']} is available (see above).")
+        first_time = self.update is None or self.update["version"] != update["version"]
+        self.update = update
+        self._show_update(f"Free VPN {update['version']} is available",
+                          "Updating takes a few seconds. Free VPN restarts by itself and "
+                          "reconnects if you're connected.", busy=False)
+        if first_time:
+            self._log(f"Update available: version {update['version']}")
+            self._notify("Update available", f"Free VPN {update['version']} is ready. Open "
+                         "Free VPN to update.")
+
+    def _show_update(self, title: str, text: str, busy: bool, offer: bool = True) -> None:
+        """The blue banner. offer=False: just news (no "Update now"; "OK" closes it)."""
+        self.update_title.set(title)
+        self.update_text.set(text)
+        if offer and not self.update_now_btn.winfo_ismapped():
+            self.update_now_btn.pack(side="left", padx=(0, self.skin.px(8)),
+                                     before=self.whats_new_btn)
+        elif not offer:
+            self.update_now_btn.pack_forget()
+        self.update_later_btn.configure(text="Not now" if offer else "OK")
+        for button in (self.update_now_btn, self.update_later_btn):
+            button.state(["disabled"] if busy else ["!disabled"])
+        if not self.update_banner.winfo_ismapped():
+            self.update_banner.pack(fill="x", pady=(self.skin.px(10), 0), before=self.stack)
+
+    def _hide_update(self) -> None:
+        self.update_banner.pack_forget()
+
+    def install_update(self) -> None:
+        """Download the new version, then restart into it."""
+        update = self.update
+        if update is None or self.update_busy:
+            return
+        self.update_busy = True
+        self._show_update(f"Downloading Free VPN {update['version']}\u2026",
+                          "This takes a few seconds.", busy=True)
+        target = this_program_file()
+
+        def work():
+            try:
+                return download_update(update, os.path.dirname(target)), ""
+            except Exception as exc:
+                return None, short_error(exc)
+        self._run_in_background(work, "update_downloaded")
+
+    def _on_update_downloaded(self, new_file, error: str) -> None:
+        self.update_busy = False
+        update = self.update or {}
+        if not new_file:
+            self._log(f"The update couldn't be downloaded: {error}")
+            self._show_update(f"Free VPN {update.get('version', '')} couldn't be downloaded",
+                              f"{error}. Try again, or download it from GitHub "
+                              "(\u201cWhat's new\u201d).", busy=False)
+            return
+        target = this_program_file()
+        arguments = [UPDATED_ARG]
+        if self.conn is not None or self.state in ("connected", "connecting", "waiting"):
+            arguments.append(RESUME_ARG)          # reconnect after the restart
+        if getattr(sys, "frozen", False):
+            program, args = target, subprocess.list2cmdline(arguments)
+        else:
+            program, args = gui_python(), subprocess.list2cmdline([target] + arguments)
+        self._log(f"Installing version {update.get('version')} and restarting\u2026")
+        self._show_update(f"Installing Free VPN {update.get('version', '')}\u2026",
+                          "Free VPN closes and opens again in a moment.", busy=True)
+        try:
+            start_update_helper(update_helper_command(new_file, target, program, args,
+                                                      os.path.dirname(target), os.getpid()))
+        except Exception as exc:
+            self._log(f"Couldn't start the updater: {exc}")
+            self._show_update("The update couldn't be installed", f"{short_error(exc)}.",
+                              busy=False)
+            return
+        self.quit()
 
     def _update_openvpn_banner(self) -> None:
         if self.openvpn:
@@ -2694,6 +2983,7 @@ class App:
         self.settings["auto_connect"] = bool(self.auto_connect_var.get())
         self.settings["auto_reconnect"] = bool(self.reconnect_var.get())
         self.settings["tray"] = bool(self.tray_var.get())
+        self.settings["check_updates"] = bool(self.check_updates_var.get())
         save_settings(self.settings)
 
     def _toggle_autostart(self) -> None:
@@ -2848,7 +3138,7 @@ class App:
         list (for up to about two minutes) before trying."""
         if not self.auto_connect_pending or self.state != "idle":
             return
-        if not fresh and self._list_retries < STARTUP_LIST_RETRIES:
+        if not fresh and self._list_retries < STARTUP_LIST_RETRIES and not self.resuming:
             self._list_retries += 1
             self.detail_var.set("Waiting for the internet before connecting…")
             self.root.after(STARTUP_RETRY_MS, self._retry_list)
@@ -2924,7 +3214,7 @@ class App:
                 self.servers, note, fresh = result
                 self.list_note.set(note)
                 self._fill_countries()
-                if self.state == "idle":
+                if self.state == "idle" and self.detail_var.get().startswith("Loading"):
                     self.detail_var.set("Pick a location and press the button to connect.")
                 self._maybe_auto_connect(fresh)
             else:
@@ -2938,6 +3228,10 @@ class App:
                                     "Check your internet, then press \u201cRefresh list\u201d.")
         elif kind == "show":
             self.show_window()
+        elif kind == "update_checked":
+            self._on_update_checked(*value[1])
+        elif kind == "update_downloaded":
+            self._on_update_downloaded(*value[1])
         elif kind == "tray":
             self._on_tray(value)
         elif kind in ("autostart", "autostart_refresh"):
@@ -3461,6 +3755,9 @@ class App:
         self._closing = True
         self._save_options()
         self._cancel_reconnect()
+        if self.update_job is not None:
+            self.root.after_cancel(self.update_job)
+            self.update_job = None
         self._stop_show_listener()
         if self.tray is not None:
             self.tray.stop()

@@ -251,6 +251,36 @@ try:
 except subprocess.TimeoutExpired:
     check("tray: right-click menu opens and closes without hanging", False, "it hung")
 
+# ---- the update helper, for real ------------------------------------------------
+# It must wait while the app is open, then swap in the new file and start it.
+folder = tempfile.mkdtemp(prefix="freevpn update test ", dir=WORK)     # a space in the path
+target = os.path.join(folder, "Ana O'Neil's FreeVPN.pyw")
+new_file = target + ".new"
+with open(target, "w") as f:
+    f.write("old")
+with open(new_file, "w") as f:
+    f.write("new")
+marker = os.path.join(folder, "started.txt")
+starter = os.path.join(folder, "starter.py")
+with open(starter, "w") as f:
+    f.write("import sys\nopen(sys.argv[1], 'w').write(' '.join(sys.argv[2:]))\n")
+app_stand_in = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(6)"])
+mod.start_update_helper(mod.update_helper_command(
+    new_file, target, sys.executable,
+    subprocess.list2cmdline([starter, marker, "--updated", "--resume"]), folder, app_stand_in.pid))
+time.sleep(3)
+check("update helper: waits while the app is still open",
+      open(target).read() == "old" and not os.path.exists(marker))
+app_stand_in.wait()
+deadline = time.time() + 40
+while not os.path.exists(marker) and time.time() < deadline:
+    time.sleep(0.3)
+time.sleep(0.5)
+check("update helper: then puts the new file in place", open(target).read() == "new" and not os.path.exists(new_file))
+check("update helper: and starts the new version with its arguments",
+      os.path.exists(marker) and open(marker).read() == "--updated --resume",
+      open(marker).read() if os.path.exists(marker) else "not started")
+
 # ---- summary -------------------------------------------------------------------
 shutil.rmtree(WORK, ignore_errors=True)
 failed = [name for name, ok in results if not ok]

@@ -14,11 +14,11 @@ def isolate(folder):
 
 
 def offline_server_list(mod):
-    """Use the saved server list in tests/fixtures (so tests don't depend on
-    VPN Gate being reachable): put it where the app keeps its last download,
-    and make the download itself fail at once."""
+    """No internet in tests: the server list comes from tests/fixtures (put where
+    the app keeps its last download), and the list download, the IP check and
+    the update check all fail at once."""
     shutil.copy(os.path.join(HERE, "fixtures", "servers.csv"), os.path.join(mod.data_dir(), "servers.csv"))
-    mod.SERVER_LIST_URL = "http://127.0.0.1:9/"
+    mod.SERVER_LIST_URL = mod.IP_CHECK_URL = mod.UPDATE_API = "http://127.0.0.1:9/"
 
 isolate(os.path.join(S, "home-" + TAG))
 os.environ.setdefault("FREEVPN_OPENVPN", os.path.join(HERE, "fake_openvpn.py"))   # an .exe on Windows

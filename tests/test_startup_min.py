@@ -12,11 +12,11 @@ def isolate(folder):
 
 
 def offline_server_list(mod):
-    """Use the saved server list in tests/fixtures (so tests don't depend on
-    VPN Gate being reachable): put it where the app keeps its last download,
-    and make the download itself fail at once."""
+    """No internet in tests: the server list comes from tests/fixtures (put where
+    the app keeps its last download), and the list download, the IP check and
+    the update check all fail at once."""
     shutil.copy(os.path.join(HERE, "fixtures", "servers.csv"), os.path.join(mod.data_dir(), "servers.csv"))
-    mod.SERVER_LIST_URL = "http://127.0.0.1:9/"
+    mod.SERVER_LIST_URL = mod.IP_CHECK_URL = mod.UPDATE_API = "http://127.0.0.1:9/"
 
 isolate(os.path.join(S, "home-startmin"))
 mod = importlib.machinery.SourceFileLoader("freevpn", sys.argv[2]).load_module()
@@ -37,7 +37,8 @@ sys.argv[1:] = [mod.AUTOSTART_ARG]
 if mod.AUTOSTART_ARG in sys.argv[1:]:   # same as main()
     root.iconify()
 app = mod.App(root); pump(3)
-check("opens minimized when started at sign-in", root.state() == "iconic", root.state())
+# With the icon next to the clock (Windows) it starts as just the icon; otherwise minimized.
+check("opens minimized when started at sign-in", root.state() == ("withdrawn" if app.tray else "iconic"), root.state())
 found = []
 threading.Thread(target=lambda: found.append(mod.show_running_copy()), daemon=True).start()
 check("starting it again brings the window back", pump(5, lambda: found and root.state() == "normal") and found == [True], f"{found} {root.state()}")

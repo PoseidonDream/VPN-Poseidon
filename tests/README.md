@@ -11,8 +11,9 @@ fail (`FAKE_MODE`, `FAKE_MODE_<n>` for the n-th start). The server list comes fr
 | `test_autostart.py` | Start-with-Windows task definition and PowerShell command | Python |
 | `test_tray_units.py` | Tray icon files and Windows structure layouts | Python |
 | `test_startup_min.py` | Opening minimized at sign-in; a second start shows the window | Python with Tk, a display |
+| `test_update.py` | Updates: checking GitHub, downloading, the helper, the window's part | Python with Tk, a display |
 | `run_gui_test.py` | The whole app through its window | Python with Tk, a display |
-| `windows_smoke.py` | Real Windows: tray icon, Task Scheduler, DNS rule, routes, job object | Windows, administrator |
+| `windows_smoke.py` | Real Windows: tray icon, Task Scheduler, DNS rule, routes, job object, update helper | Windows, administrator |
 
 ## On Windows
 
