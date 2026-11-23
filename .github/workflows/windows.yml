@@ -1,9 +1,10 @@
 name: Windows
 
-# On every push: test Free VPN on a real Windows machine and build FreeVPN.exe.
-# On a version tag (like v1.4): also publish a release with the downloads. The
-# app's updater looks at the latest release, so publishing one is how an update
-# reaches everyone.
+# On every push and pull request: test Free VPN on a real Windows machine and
+# build FreeVPN.exe. When main gets a new version number (APP_VERSION in
+# FreeVPN.pyw), publish release v<version> with the downloads, once. The app's
+# updater looks at the latest release, so that's how an update reaches everyone.
+# Pushing a tag like v1.4 by hand does the same.
 on:
   push:
     branches: [main]
@@ -83,7 +84,7 @@ jobs:
             out/FreeVPN.pyw
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: test-and-build
     runs-on: ubuntu-latest
     permissions:
@@ -93,10 +94,18 @@ jobs:
         with:
           name: FreeVPN
 
-      - name: Publish the release
+      - name: Publish a release for this version (once)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" FreeVPN.exe FreeVPN.zip FreeVPN.pyw \
-            --repo "$GITHUB_REPOSITORY" --title "Free VPN $GITHUB_REF_NAME" \
+          version=$(grep -m1 -oP '^APP_VERSION = "\K[^"]+' FreeVPN.pyw)
+          tag="v$version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
+            echo "::error::The tag is $GITHUB_REF_NAME but FreeVPN.pyw says version $version"; exit 1
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $tag already exists; nothing to publish."; exit 0
+          fi
+          gh release create "$tag" FreeVPN.exe FreeVPN.zip FreeVPN.pyw \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Free VPN $tag" \
             --notes "**New here?** Download **FreeVPN.exe** (needs OpenVPN installed) or **FreeVPN.zip** (the Python version; see README.txt inside). **Already have Free VPN?** It offers this update by itself: click *Update now* in the blue bar. (FreeVPN.pyw is the file the Python version downloads when it updates.) Tested on Windows before this release was made."

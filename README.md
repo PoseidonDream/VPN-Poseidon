@@ -44,6 +44,7 @@ logs for at least two weeks.
 
 `FreeVPN.pyw` is the whole app (Python standard library only). The tests are in
 [`tests/`](tests/README.md); GitHub runs them on Windows for every push
-(see `.github/workflows/windows.yml`), and a version tag such as `v1.4` publishes a
-release with `FreeVPN.exe`, `FreeVPN.zip` and `FreeVPN.pyw`. Running copies of the app see
-the new release and offer it as an update (the version in `FreeVPN.pyw` must match the tag).
+(see `.github/workflows/windows.yml`). To release a new version, raise `APP_VERSION` in
+`FreeVPN.pyw` and merge it into `main`: once the Windows tests pass, GitHub publishes release
+`v<version>` with `FreeVPN.exe`, `FreeVPN.zip` and `FreeVPN.pyw`, and running copies of the
+app offer it as an update.
